@@ -1,0 +1,42 @@
+# —— 本仓库只分发网关核心：站点插件整体不入库 ——
+plugins/
+
+# —— 运行日志与探针依赖（不入库）——
+*.log
+package.json
+package-lock.json
+
+# —— 依赖 ——
+node_modules/
+
+# —— 隐私：凭证 / 会话 / 一次性收件箱（不入库）——
+configs/credentials.json
+camp-inbox.json
+hf-inbox.json
+yyds-temp-inbox.md
+
+# —— 探针 / 验证脚本（不入库）——
+scripts/
+snv-*.mjs
+snv-rcc.log
+tmp-inbox.cjs
+tmp-llm7.cjs
+cb-*.mjs
+
+# —— 已收集到的网站信息（研究产出，不入库）——
+probe-out/
+AVAILABLE_SITES.md
+data/
+PROGRESS.md
+
+# —— 预编译构建产物（可 go build 复现，不入库）——
+bin/
+plugins/aihorde/bin/
+plugins/echo/bin/
+plugins/openai-compat/bin/
+plugins/openrouter/bin/
+plugins/pollinations/bin/
+
+# —— 本地凭证加密密钥（勿入库）——
+configs/credkey.txt
+configs/settings.json

@@ -1,0 +1,262 @@
+# 网关基础配置
+server:
+  addr: ":18080"
+  # 网关自身的 API Key。留空表示不鉴权（仅建议本机使用）。
+  api_keys: []
+  request_timeout: "180s"
+  max_body_bytes: 8388608
+
+limits:
+  # 每个插件同时处理的请求数上限
+  per_plugin_concurrency: 2
+  # 每个插件的每秒请求数（令牌桶）
+  per_plugin_rps: 1
+  max_retries: 2
+
+plugins:
+  # 参考插件：不依赖任何外部站点，用于验证协议与工具调用闭环
+  - name: echo
+    command: ./plugins/echo/bin/echo
+    priority: 100
+    tools: native
+    models:
+      - echo-mini
+      - echo-lite
+    auth:
+      type: none
+
+  # 免凭证真实站点：匿名可用、原生支持 tools（A 类原生透传）
+  # 站点免费额度为「每 IP 每 45 秒 1 次回复」，因此 per_plugin_rps 压到 0.02。
+  - name: pollinations
+    command: ./plugins/pollinations/bin/pollinations
+    priority: 5
+    tools: native
+    timeout: "240s"
+    per_plugin_rps: 0.022
+    models:
+      - openai-fast
+    auth:
+      type: none
+
+  # AI Horde：匿名 key 即可提交，无需注册（C 类：纯文本生成，无 tools）
+  # 异步任务队列，排队时间不可控，因此超时放宽到 300s。
+  - name: aihorde
+    command: ./plugins/aihorde/bin/aihorde
+    priority: 20
+    tools: none
+    timeout: "300s"
+    per_plugin_rps: 0.05
+    models:
+      - aihorde
+      - koboldcpp/Llama-3.2-1B-Instruct
+    auth:
+      type: none
+
+  # 示例：需要登录凭证的站点，网关只声明需求，不负责获取
+  # 凭证未录入时，该插件不参与路由，/v1/models 里会标记 configured=false
+  - name: openrouter
+    command: ./plugins/openrouter/bin/openrouter
+    priority: 10
+    tools: native
+    timeout: "120s"
+    models:
+      - openrouter/auto
+    auth:
+      type: api_key
+      required_fields:
+        - api_key
+
+  # ===== 以下是同一个二进制接入的通用兼容站点 =====
+  # 每个站点只需要在 env 里描述端点与模型，不需要单独写插件。
+  # 凭证统一在控制台录入 api_key，未录入则不参与路由。
+
+  # Groq：免费额度大、速度快，原生支持 tools
+  - name: groq
+    command: ./plugins/openai-compat/bin/openai-compat
+    priority: 15
+    tools: native
+    timeout: "120s"
+    env:
+      COMPAT_BASE_URL: "https://api.groq.com/openai/v1"
+      COMPAT_MODELS: "llama-3.3-70b-versatile,llama-3.1-8b-instant,qwen/qwen3-32b"
+    models:
+      - llama-3.3-70b-versatile
+      - llama-3.1-8b-instant
+      - qwen/qwen3-32b
+    auth:
+      type: api_key
+      required_fields:
+        - api_key
+
+  # Cerebras：推理极快，免费层支持 tools
+  - name: cerebras
+    command: ./plugins/openai-compat/bin/openai-compat
+    priority: 16
+    tools: native
+    timeout: "120s"
+    env:
+      COMPAT_BASE_URL: "https://api.cerebras.ai/v1"
+      COMPAT_MODELS: "llama-3.3-70b,llama3.1-8b,qwen-3-32b"
+    models:
+      - llama-3.3-70b
+      - llama3.1-8b
+      - qwen-3-32b
+    auth:
+      type: api_key
+      required_fields:
+        - api_key
+
+  # Mistral：免费层含 Mistral 系列
+  - name: mistral
+    command: ./plugins/openai-compat/bin/openai-compat
+    priority: 17
+    tools: native
+    timeout: "120s"
+    env:
+      COMPAT_BASE_URL: "https://api.mistral.ai/v1"
+      COMPAT_MODELS: "mistral-small-latest,mistral-large-latest,open-mistral-nemo"
+    models:
+      - mistral-small-latest
+      - mistral-large-latest
+      - open-mistral-nemo
+    auth:
+      type: api_key
+      required_fields:
+        - api_key
+
+  # Together：开源权重模型池大
+  - name: together
+    command: ./plugins/openai-compat/bin/openai-compat
+    priority: 18
+    tools: native
+    timeout: "180s"
+    env:
+      COMPAT_BASE_URL: "https://api.together.xyz/v1"
+      COMPAT_MODELS: "meta-llama/Llama-3.3-70B-Instruct-Turbo,Qwen/Qwen2.5-72B-Instruct-Turbo"
+    models:
+      - meta-llama/Llama-3.3-70B-Instruct-Turbo
+      - Qwen/Qwen2.5-72B-Instruct-Turbo
+    auth:
+      type: api_key
+      required_fields:
+        - api_key
+
+  # DeepInfra：按量计费，部分模型有免费额度
+  - name: deepinfra
+    command: ./plugins/openai-compat/bin/openai-compat
+    priority: 19
+    tools: native
+    timeout: "180s"
+    env:
+      COMPAT_BASE_URL: "https://api.deepinfra.com/v1/openai"
+      COMPAT_MODELS: "meta-llama/Meta-Llama-3.1-8B-Instruct,Qwen/Qwen2.5-72B-Instruct"
+    models:
+      - meta-llama/Meta-Llama-3.1-8B-Instruct
+      - Qwen/Qwen2.5-72B-Instruct
+    auth:
+      type: api_key
+      required_fields:
+        - api_key
+
+  # SiliconFlow（硅基流动）：国内可直连，免费模型多
+  - name: siliconflow
+    command: ./plugins/openai-compat/bin/openai-compat
+    priority: 21
+    tools: native
+    timeout: "180s"
+    env:
+      COMPAT_BASE_URL: "https://api.siliconflow.cn/v1"
+      COMPAT_MODELS: "Qwen/Qwen2.5-7B-Instruct,THUDM/glm-4-9b-chat"
+    models:
+      - Qwen/Qwen2.5-7B-Instruct
+      - THUDM/glm-4-9b-chat
+    auth:
+      type: api_key
+      required_fields:
+        - api_key
+
+  # SambaNova：免费层吞吐高
+  - name: sambanova
+    command: ./plugins/openai-compat/bin/openai-compat
+    priority: 22
+    tools: native
+    timeout: "180s"
+    env:
+      COMPAT_BASE_URL: "https://api.sambanova.ai/v1"
+      COMPAT_MODELS: "Meta-Llama-3.3-70B-Instruct,Meta-Llama-3.1-8B-Instruct"
+    models:
+      - Meta-Llama-3.3-70B-Instruct
+      - Meta-Llama-3.1-8B-Instruct
+    auth:
+      type: api_key
+      required_fields:
+        - api_key
+
+  # Novita：部分模型免费
+  - name: novita
+    command: ./plugins/openai-compat/bin/openai-compat
+    priority: 23
+    tools: native
+    timeout: "180s"
+    env:
+      COMPAT_BASE_URL: "https://api.novita.ai/v3/openai"
+      COMPAT_MODELS: "meta-llama/llama-3.1-8b-instruct,deepseek/deepseek-v3"
+    models:
+      - meta-llama/llama-3.1-8b-instruct
+      - deepseek/deepseek-v3
+    auth:
+      type: api_key
+      required_fields:
+        - api_key
+
+  # Nebius：免费层含开源模型
+  - name: nebius
+    command: ./plugins/openai-compat/bin/openai-compat
+    priority: 24
+    tools: native
+    timeout: "180s"
+    env:
+      COMPAT_BASE_URL: "https://api.studio.nebius.ai/v1"
+      COMPAT_MODELS: "meta-llama/Meta-Llama-3.1-8B-Instruct,Qwen/Qwen2.5-72B-Instruct"
+    models:
+      - meta-llama/Meta-Llama-3.1-8B-Instruct
+      - Qwen/Qwen2.5-72B-Instruct
+    auth:
+      type: api_key
+      required_fields:
+        - api_key
+
+  # NVIDIA Build：模型目录公开可读，含 DeepSeek / Mistral 等
+  - name: nvidia
+    command: ./plugins/openai-compat/bin/openai-compat
+    priority: 25
+    tools: native
+    timeout: "180s"
+    env:
+      COMPAT_BASE_URL: "https://integrate.api.nvidia.com/v1"
+      COMPAT_MODELS: "deepseek-ai/deepseek-v4.1-flash,mistralai/mistral-7b-instruct-v0.3,nvidia/llama-3.1-nemotron-70b-instruct"
+    models:
+      - deepseek-ai/deepseek-v4.1-flash
+      - mistralai/mistral-7b-instruct-v0.3
+      - nvidia/llama-3.1-nemotron-70b-instruct
+    auth:
+      type: api_key
+      required_fields:
+        - api_key
+
+  # Cohere：Command 系列，端点格式与 OpenAI 略有差异，走兼容层
+  - name: cohere
+    command: ./plugins/openai-compat/bin/openai-compat
+    priority: 26
+    tools: native
+    timeout: "120s"
+    env:
+      COMPAT_BASE_URL: "https://api.cohere.ai/compatibility/v1"
+      COMPAT_MODELS: "command-r-plus-08-2024,command-r-08-2024"
+    models:
+      - command-r-plus-08-2024
+      - command-r-08-2024
+    auth:
+      type: api_key
+      required_fields:
+        - api_key
