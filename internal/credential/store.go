@@ -185,6 +185,15 @@ func (s *Store) CountLines(plugin, field string) int {
 	return len(nonEmptyLines(v))
 }
 
+// Values 返回多值字段的全部明文，供网关内部轮换使用（不经过共享游标）。
+func (s *Store) Values(plugin, field string) []string {
+	v, ok := s.Get(plugin, field)
+	if !ok {
+		return nil
+	}
+	return nonEmptyLines(v)
+}
+
 // Pick 从多值字段中按轮换顺序取一个值，用于多 key / 多代理负载均衡。
 func (s *Store) Pick(plugin, field string) (string, bool) {
 	v, ok := s.Get(plugin, field)

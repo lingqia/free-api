@@ -429,7 +429,7 @@ const consoleHTML = `<!DOCTYPE html>
 
     <section id="tab-proxy" class="hidden">
       <h1>代理池</h1>
-      <div class="sub">所有站点共用此代理池，按调用轮换；站点不再单独配置代理。</div>
+      <div class="sub">全局出口池。网关会自动给插件进程注入 HTTP_PROXY，所有站点请求按调用轮换；插件不需要自己实现代理。</div>
       <div class="card">
         <div class="card-head">
           <h2>当前代理</h2>
@@ -441,7 +441,7 @@ const consoleHTML = `<!DOCTYPE html>
         </div>
         <div id="proxy-list"></div>
         <div class="pager hidden" id="proxy-pager"></div>
-        <div class="muted detail-note" style="margin-top:12px">支持 http、https、socks5；不写协议时按 http 处理。匿名站点的账号数会按代理数量计算，所有站点调用都会轮换使用。</div>
+        <div class="muted detail-note" style="margin-top:12px">支持 http、https、socks5；不写协议时按 http 处理。匿名站点的账号数会按代理数量计算，所有站点的请求都会自动轮换使用。</div>
       </div>
     </section>
 

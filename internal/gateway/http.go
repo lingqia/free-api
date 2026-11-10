@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -27,7 +28,7 @@ func (g *Gateway) Handler(maxBody int64) http.Handler {
 	mux.HandleFunc("POST /v1/responses", g.wrap(maxBody, g.handleResponses))
 	mux.HandleFunc("POST /v1/messages", g.wrap(maxBody, g.handleMessages))
 	mux.HandleFunc("GET /v1/models", g.handleModels)
-	mux.HandleFunc("GET /v1/models/{id}", g.handleModel)
+	mux.HandleFunc("GET /v1/models/{id...}", g.handleModel)
 	mux.HandleFunc("GET /healthz", g.handleHealth)
 	mux.HandleFunc("GET /api/models", g.handleModels)
 	mux.HandleFunc("GET /api/plugins", g.handlePlugins)
@@ -157,7 +158,7 @@ func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request, body []
 func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, req *protocol.Request, flavor string) {
 	start := time.Now()
 
-	candidates, err := g.Resolve(req.Model, req.HasFunctionTools())
+	routes, err := g.Resolve(req.Model, req.HasFunctionTools())
 	if err != nil {
 		flavorName := "openai"
 		if flavor == "anthropic" {
@@ -167,7 +168,7 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, req *protocol.Re
 		return
 	}
 
-	events, err := g.Dispatch(r.Context(), candidates, req)
+	events, err := g.Dispatch(r.Context(), routes, req)
 	if err != nil {
 		flavorName := "openai"
 		if flavor == "anthropic" {
@@ -182,7 +183,7 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, req *protocol.Re
 		"protocol", flavor,
 		"stream", req.Stream,
 		"tools", len(req.Tools),
-		"candidates", len(candidates),
+		"candidates", len(routes),
 	)
 
 	var renderErr error
@@ -241,9 +242,13 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleModel 返回单个模型详情。
+// handleModel 返回单个模型详情。模型 ID 形如 插件/模型名，可包含斜杠。
 func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if id == "" {
+		g.handleModels(w, r)
+		return
+	}
 	for _, m := range g.modelCatalog() {
 		if m.ID == id {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -254,21 +259,23 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 	protocol.WriteErrorJSON(w, http.StatusNotFound, "not_found_error", "模型不存在: "+id)
 }
 
-// modelCatalog 汇总所有插件的模型，按模型聚合成带能力标注的目录。
+// modelCatalog 汇总所有插件的模型。对外模型 ID 统一为「插件/模型名」，
+// 例如 aki/deepseek-v4.1-flash；同名模型由不同插件提供时会各自成为独立条目。
 func (g *Gateway) modelCatalog() []modelEntry {
-	byModel := map[string]*modelEntry{}
+	byID := map[string]*modelEntry{}
 	for _, snap := range g.Registry.Snapshot() {
 		for _, mid := range snap.Models {
-			entry, ok := byModel[mid]
+			id := snap.Name + "/" + mid
+			entry, ok := byID[id]
 			if !ok {
 				entry = &modelEntry{
-					ID:      mid,
+					ID:      id,
 					Object:  "model",
 					Created: 0,
 					OwnedBy: "free-api",
 					Capabilities: map[string]any{
 						"streaming": true,
-						"tools":     "none",
+						"tools":     snap.Tools,
 					},
 					Auth: map[string]any{
 						"required":   len(snap.AuthFields) > 0,
@@ -276,35 +283,25 @@ func (g *Gateway) modelCatalog() []modelEntry {
 						"fields":     snap.AuthFields,
 					},
 				}
-				byModel[mid] = entry
+				if len(snap.AuthFields) == 0 {
+					entry.Auth["required"] = false
+					entry.Auth["configured"] = true
+				}
+				byID[id] = entry
 			}
 			entry.Sources = append(entry.Sources, sourceEntry{
 				Plugin: snap.Name,
 				Tools:  snap.Tools,
 				Ready:  snap.Healthy && snap.AuthReady,
 			})
-			// 能力取所有来源里最强的一档。
-			entry.Capabilities["tools"] = strongestTools(entry.Capabilities["tools"].(string), snap.Tools)
-			if len(snap.AuthFields) == 0 {
-				entry.Auth["required"] = false
-				entry.Auth["configured"] = true
-			}
 		}
 	}
-	out := make([]modelEntry, 0, len(byModel))
-	for _, e := range byModel {
+	out := make([]modelEntry, 0, len(byID))
+	for _, e := range byID {
 		out = append(out, *e)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
-}
-
-// strongestTools 合并工具档位，native > builtin > none。
-func strongestTools(a, b string) string {
-	rank := map[string]int{"none": 0, "builtin": 1, "native": 2}
-	if rank[b] > rank[a] {
-		return b
-	}
-	return a
 }
 
 // handleHealth 健康检查。

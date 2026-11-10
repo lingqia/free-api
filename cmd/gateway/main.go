@@ -76,8 +76,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 统一代理入口：所有插件进程自动注入 HTTP_PROXY，按全局代理池轮换出口。
+	// 插件不需要自己实现代理选择，池为空时直接放行。
+	baseEnv := []string{}
+	if creds != nil {
+		hub := gateway.NewProxyHub(creds)
+		if err := hub.Start(); err != nil {
+			slog.Warn("本地代理入口启动失败，插件将直连", "err", err)
+		} else {
+			defer hub.Close()
+			baseEnv = hub.Env()
+			slog.Info("插件统一代理已启用", "addr", hub.Addr())
+		}
+	}
+
 	slog.Info("正在启动插件…", "count", len(cfg.Plugins))
-	reg.StartAll(ctx, cfg.Plugins)
+	reg.StartAll(ctx, cfg.Plugins, baseEnv)
 
 	gw := gateway.New(reg, creds, gateway.Config{
 		Timeout:              cfg.RequestTimeout(),

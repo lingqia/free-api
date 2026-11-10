@@ -104,34 +104,62 @@ type Route struct {
 	ToolLevel string // native / builtin / none
 }
 
-// Resolve 选择目标插件。策略：
-//  1. 请求带函数工具时只考虑 tools=native 的插件；
-//  2. 认证未配置的插件不参与；
-//  3. 按配置优先级、健康度排序取第一个。
-func (g *Gateway) Resolve(model string, needTools bool) ([]*plugin.Instance, error) {
-	candidates := g.Registry.Candidates(model, needTools)
-	if len(candidates) == 0 {
-		if needTools {
-			return nil, fmt.Errorf("%w: 模型 %s 在支持工具调用的站点上没有可用来源", ErrNoCandidate, model)
+// Resolve 选择目标插件。模型 ID 支持两种形式：
+//   - `插件/模型`：直接锁定到该插件，内部只把斜杠后的模型名传给插件；
+//   - 纯模型名：在所有提供该模型的插件里按优先级故障转移。
+//
+// 先按完整模型名匹配，避免把 meta-llama/xxx 这类本身带斜杠的模型误拆。
+// 带函数工具的请求只考虑 tools=native 的插件。
+func (g *Gateway) Resolve(model string, needTools bool) ([]Route, error) {
+	if candidates := g.Registry.Candidates(model, needTools); len(candidates) > 0 {
+		routes := make([]Route, 0, len(candidates))
+		for _, inst := range candidates {
+			routes = append(routes, Route{
+				Plugin:    inst,
+				Upstream:  model,
+				ToolLevel: g.Registry.ToolsLevel(inst.Name),
+			})
 		}
-		return nil, fmt.Errorf("%w: 模型 %s 没有已配置且健康的来源", ErrNoCandidate, model)
+		return routes, nil
 	}
-	return candidates, nil
+
+	if pluginName, upstream, ok := g.Registry.SplitQualified(model); ok {
+		inst, exists := g.Registry.Get(pluginName)
+		if !exists || !inst.Healthy() {
+			return nil, fmt.Errorf("%w: 插件 %s 未运行", ErrNoCandidate, pluginName)
+		}
+		if !g.Registry.ServesModel(pluginName, upstream) {
+			return nil, fmt.Errorf("%w: 插件 %s 不提供模型 %s", ErrNoCandidate, pluginName, upstream)
+		}
+		level := g.Registry.ToolsLevel(pluginName)
+		if needTools && level != "native" {
+			return nil, fmt.Errorf("%w: 插件 %s 不支持函数工具", ErrNoCandidate, pluginName)
+		}
+		if !g.Registry.AuthReady(pluginName) {
+			return nil, fmt.Errorf("%w: 插件 %s 缺少必需凭证", ErrNoCandidate, pluginName)
+		}
+		return []Route{{Plugin: inst, Upstream: upstream, ToolLevel: level}}, nil
+	}
+
+	if needTools {
+		return nil, fmt.Errorf("%w: 模型 %s 在支持工具调用的站点上没有可用来源（模型 ID 可用 插件/模型 形式）", ErrNoCandidate, model)
+	}
+	return nil, fmt.Errorf("%w: 模型 %s 没有已配置且健康的来源（模型 ID 可用 插件/模型 形式）", ErrNoCandidate, model)
 }
 
-// Dispatch 向候选插件依次尝试，返回第一个成功的统一事件通道。
+// Dispatch 向候选路由依次尝试，返回第一个成功的统一事件通道。
 // 每次尝试都有自己的超时与重试配额；任一候选失败会自动落到下一个。
-func (g *Gateway) Dispatch(ctx context.Context, candidates []*plugin.Instance, req *protocol.Request) (<-chan event.Event, error) {
-	if len(candidates) == 0 {
+func (g *Gateway) Dispatch(ctx context.Context, routes []Route, req *protocol.Request) (<-chan event.Event, error) {
+	if len(routes) == 0 {
 		return nil, ErrNoCandidate
 	}
 
 	var lastErr error
-	for _, inst := range candidates {
-		events, err := g.attempt(ctx, inst, req)
+	for _, route := range routes {
+		events, err := g.attempt(ctx, route, req)
 		if err != nil {
-			lastErr = fmt.Errorf("%s: %w", inst.Name, err)
-			slog.Warn("插件尝试失败，切换下一候选", "plugin", inst.Name, "err", err)
+			lastErr = fmt.Errorf("%s: %w", route.Plugin.Name, err)
+			slog.Warn("插件尝试失败，切换下一候选", "plugin", route.Plugin.Name, "err", err)
 			continue
 		}
 		return events, nil
@@ -143,7 +171,9 @@ func (g *Gateway) Dispatch(ctx context.Context, candidates []*plugin.Instance, r
 }
 
 // attempt 对单个插件发起调用，把插件事件翻译成网关统一事件。
-func (g *Gateway) attempt(ctx context.Context, inst *plugin.Instance, req *protocol.Request) (<-chan event.Event, error) {
+func (g *Gateway) attempt(ctx context.Context, route Route, req *protocol.Request) (<-chan event.Event, error) {
+	inst := route.Plugin
+
 	// 限流：等待令牌桶
 	if err := g.acquireRate(ctx, inst.Name); err != nil {
 		return nil, err
@@ -155,8 +185,9 @@ func (g *Gateway) attempt(ctx context.Context, inst *plugin.Instance, req *proto
 	}
 
 	// 组装插件请求参数：模型、消息、工具、凭证。
+	// 插件只看到斜杠后的上游模型名，不感知插件前缀。
 	params := map[string]any{
-		"model":       req.Model,
+		"model":       route.Upstream,
 		"system":      req.System,
 		"messages":    req.Messages,
 		"tools":       req.Tools,

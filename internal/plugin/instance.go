@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -108,14 +109,17 @@ type Instance struct {
 }
 
 // Start 启动插件进程并完成首次模型能力探测。
-func Start(ctx context.Context, name, command string, args, env []string, dir string) (*Instance, error) {
+// baseEnv 是网关统一注入的环境变量（如代理），configEnv 是插件配置里的 env，
+// 后者优先级更高，可覆盖 baseEnv。
+func Start(ctx context.Context, name, command string, args, configEnv, baseEnv []string, dir string) (*Instance, error) {
 	cmd := exec.Command(command, args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	if len(env) > 0 {
-		cmd.Env = append(cmd.Env, env...)
-	}
+	// 继承网关进程环境，再叠加统一注入项与插件自定义项，避免插件丢失 PATH 等基础变量。
+	merged := append(os.Environ(), baseEnv...)
+	merged = append(merged, configEnv...)
+	cmd.Env = merged
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("创建 stdin 管道失败: %w", err)
@@ -302,11 +306,11 @@ func decodeFinalResult(raw json.RawMessage) []EventPayload {
 		return events
 	}
 	var summary struct {
-		Content  string     `json:"content"`
+		Content   string     `json:"content"`
 		ToolCalls []ToolCall `json:"tool_calls"`
-		Usage    *Usage     `json:"usage"`
-		Error    string     `json:"error"`
-		Finish   string     `json:"finish"`
+		Usage     *Usage     `json:"usage"`
+		Error     string     `json:"error"`
+		Finish    string     `json:"finish"`
 	}
 	if err := json.Unmarshal(raw, &summary); err != nil {
 		return nil

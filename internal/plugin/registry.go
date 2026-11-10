@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +26,8 @@ type Registry struct {
 	authFields map[string]config.Auth
 	// configured 由凭证层注入的回调，用于判断插件认证是否齐备。
 	configured func(plugin string, required []string) bool
+	// baseEnv 是网关统一注入的环境变量（代理等），重启插件时复用。
+	baseEnv []string
 }
 
 // NewRegistry 构造空注册表。
@@ -46,8 +49,12 @@ func (r *Registry) SetCredentialCheck(fn func(plugin string, required []string) 
 }
 
 // StartAll 启动配置里所有启用的插件。单个插件失败不影响其它插件，
-// 失败信息记录在注册表里供控制台展示。
-func (r *Registry) StartAll(ctx context.Context, plugins []config.Plugin) {
+// 失败信息记录在注册表里供控制台展示。baseEnv 是网关统一注入的环境变量
+// （例如指向本地轮换代理的 HTTP_PROXY）。
+func (r *Registry) StartAll(ctx context.Context, plugins []config.Plugin, baseEnv []string) {
+	r.mu.Lock()
+	r.baseEnv = append([]string{}, baseEnv...)
+	r.mu.Unlock()
 	var wg sync.WaitGroup
 	for _, p := range plugins {
 		if !p.IsEnabled() {
@@ -61,7 +68,7 @@ func (r *Registry) StartAll(ctx context.Context, plugins []config.Plugin) {
 			for k, v := range p.Env {
 				env = append(env, fmt.Sprintf("%s=%s", k, v))
 			}
-			inst, err := Start(ctx, p.Name, p.Command, p.Args, env, p.Dir)
+			inst, err := Start(ctx, p.Name, p.Command, p.Args, env, baseEnv, p.Dir)
 			if err != nil {
 				slog.Error("插件启动失败", "plugin", p.Name, "err", err)
 				r.mu.Lock()
@@ -103,6 +110,44 @@ func (r *Registry) registerMeta(p config.Plugin, inst *Instance) {
 			}
 		}
 	}
+}
+
+// Has 判断插件名是否已在配置中注册（不要求进程健康）。
+func (r *Registry) Has(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.order[name]
+	return ok
+}
+
+// ServesModel 判断插件是否提供指定模型（配置或 models 探测结果的并集）。
+func (r *Registry) ServesModel(name, model string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.modelIndex[model] {
+		if p == name {
+			return true
+		}
+	}
+	return false
+}
+
+// SplitQualified 拆分「插件/模型」形式的对外模型 ID。
+// 只有当斜杠前的名字确实是已注册插件时才成立，避免把 meta-llama/xxx
+// 这类本身带斜杠的上游模型误判成插件前缀。
+func (r *Registry) SplitQualified(model string) (pluginName, upstream string, ok bool) {
+	idx := strings.Index(model, "/")
+	if idx <= 0 || idx == len(model)-1 {
+		return "", "", false
+	}
+	name := model[:idx]
+	r.mu.RLock()
+	_, exists := r.order[name]
+	r.mu.RUnlock()
+	if !exists {
+		return "", "", false
+	}
+	return name, model[idx+1:], true
 }
 
 // Get 按名字取插件实例。
@@ -222,7 +267,10 @@ func (r *Registry) Restart(ctx context.Context, name string, p config.Plugin) er
 	for k, v := range p.Env {
 		env = append(env, fmt.Sprintf("%s=%s", k, v))
 	}
-	inst, err := Start(ctx, p.Name, p.Command, p.Args, env, p.Dir)
+	r.mu.RLock()
+	baseEnv := append([]string{}, r.baseEnv...)
+	r.mu.RUnlock()
+	inst, err := Start(ctx, p.Name, p.Command, p.Args, env, baseEnv, p.Dir)
 	if err != nil {
 		return err
 	}
@@ -243,16 +291,16 @@ func (r *Registry) StopAll() {
 
 // Snapshot 是插件运行状态快照。
 type Snapshot struct {
-	Name        string   `json:"name"`
-	Healthy     bool     `json:"healthy"`
-	UptimeSec   int      `json:"uptime_seconds"`
-	Tools       string   `json:"tools"`
-	Models      []string `json:"models"`
-	AuthType    string   `json:"auth_type"`
-	AuthReady   bool     `json:"auth_ready"`
-	AuthFields  []string `json:"auth_required_fields,omitempty"`
-	LastError   string   `json:"last_error,omitempty"`
-	Priority    int      `json:"priority"`
+	Name       string   `json:"name"`
+	Healthy    bool     `json:"healthy"`
+	UptimeSec  int      `json:"uptime_seconds"`
+	Tools      string   `json:"tools"`
+	Models     []string `json:"models"`
+	AuthType   string   `json:"auth_type"`
+	AuthReady  bool     `json:"auth_ready"`
+	AuthFields []string `json:"auth_required_fields,omitempty"`
+	LastError  string   `json:"last_error,omitempty"`
+	Priority   int      `json:"priority"`
 }
 
 // Snapshot 生成当前插件状态快照，供控制台展示。

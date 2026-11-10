@@ -88,7 +88,7 @@
     "top_p": 1,
     "stop": ["\n\n"],
     "builtin_tools": ["web_search"],
-    "credential": {"api_key": "sk-xxx", "proxy": "http://127.0.0.1:7890"}
+    "credential": {"api_key": "sk-xxx"}
   }
 }
 ```
@@ -212,7 +212,7 @@
 
 ### 6.1 credential
 
-`credential` 只包含插件在配置中声明的字段，加上可选的 `proxy`：
+`credential` 只包含插件在配置中声明的字段：
 
 ```yaml
 auth:
@@ -222,20 +222,28 @@ auth:
 ```
 
 - 必填字段缺失时，网关不会把请求路由到该插件。
-- 多行值（每行一个 key / 一个代理）由网关按调用轮换，插件每次只会收到一个值。
+- 多行值（每行一个 key）由网关按调用轮换，插件每次只会收到一个值。
 - 插件**不得**要求未声明的字段，不得自行读取网关的凭证文件或环境变量。
 - 凭证只用于本次上游请求，不得落盘、不得打日志、不得转发到第三方。
 
-### 6.2 proxy
+### 6.2 代理（网关统一注入，插件不要自己实现）
 
-`credential.proxy` 是可选字段，格式为 `http://host:port`、`https://host:port`、`socks5://host:port`、`socks5h://host:port`，可能带 `user:pass@`。
+网关启动插件进程时会自动注入以下环境变量，指向网关内置的**轮换代理入口**：
 
-要求：
+```
+HTTP_PROXY / HTTPS_PROXY / ALL_PROXY
+http_proxy / https_proxy / all_proxy
+NO_PROXY / no_proxy = 127.0.0.1,localhost,::1
+```
 
-- 只要存在 `proxy`，**所有对上游的 HTTP(S) 请求都必须走该代理**，包括获取模型列表、流式请求、刷新 token 等。
-- 不能只对部分请求生效，也不能忽略代理直连。
-- 未提供 `proxy` 时走本机直连；不要自行猜测或读取系统代理设置。
-- 代理失败时应返回 `error`，不要静默改直连。
+该入口从控制台的全局代理池里按请求轮换出口，池为空时直连。因此：
+
+- 插件**只需要使用标准 HTTP 客户端**（Go 的默认 `http.Transport`、Python `requests`/`urllib`、`curl` 等），不要自己实现代理选择、轮换、代理池配置或读取 `credential.proxy`。
+- 不要覆盖或删除网关注入的 `*_PROXY` 环境变量；如需访问本机服务，使用 `NO_PROXY`（已默认包含回环地址）。
+- 如果所用客户端默认不读取代理环境变量（例如 Node 原生 `fetch`/undici），请在插件内显式启用环境代理（如 `EnvHttpProxyAgent`），但仍不要自行选择出口。
+- 旧版网关可能仍会注入 `credential.proxy` 作为兼容字段；新插件可以忽略它。**不要同时使用环境代理和 `credential.proxy`**，避免双重代理。
+- 代理不可用时应返回 `error`，不要静默改直连。
+- 不要在插件配置里写死代理地址；需要调整出口时，只改控制台的代理池。
 
 ## 7. 超时、并发与限流
 
@@ -301,7 +309,8 @@ plugins:
 - [ ] `chat` 以且仅以一个 `done` / `error` 结束，之后无输出。
 - [ ] 流式文本按 `delta` 连续输出，事件及时 flush。
 - [ ] `tools: native` 时工具调用字段完整，`finish` 为 `tool_calls`，支持第二轮工具结果。
-- [ ] `credential.proxy` 存在时所有上游请求确实走代理。
+- [ ] 使用标准 HTTP 客户端，能自动使用网关注入的 `HTTP_PROXY`；没有自己实现代理轮换。
+- [ ] 代理池为空时直连，代理不可用时返回可读 `error`。
 - [ ] 并发 2 个 `chat` 不串流、不崩溃。
 - [ ] 上游超时 / 429 / 5xx 能返回可读 `error`，进程不退出。
 - [ ] 日志与错误信息中无凭证、Cookie、完整请求头。
@@ -320,7 +329,7 @@ plugins:
 一次普通对话：
 
 ```text
-→ {"jsonrpc":"2.0","id":"p-2","method":"chat","params":{"model":"example-model","system":"","messages":[{"role":"user","content":"hi"}],"max_tokens":256,"credential":{"api_key":"sk-xxx","proxy":"http://127.0.0.1:7890"}}}
+→ {"jsonrpc":"2.0","id":"p-2","method":"chat","params":{"model":"example-model","system":"","messages":[{"role":"user","content":"hi"}],"max_tokens":256,"credential":{"api_key":"sk-xxx"}}}
 ← {"jsonrpc":"2.0","id":"p-2","method":"event","params":{"type":"delta","text":"你"}}
 ← {"jsonrpc":"2.0","id":"p-2","method":"event","params":{"type":"delta","text":"好"}}
 ← {"jsonrpc":"2.0","id":"p-2","method":"event","params":{"type":"usage","usage":{"prompt_tokens":3,"completion_tokens":2}}}
@@ -344,6 +353,6 @@ plugins:
 | 流式内容重复 | `done` 之后仍在发事件，或事件 `id` 与请求 `id` 不一致 |
 | 输出被忽略 | 往 stdout 打了日志 / 多行 JSON / 非 UTF-8 |
 | 工具调用失效 | `arguments` 不是 JSON 字符串，或分多帧发送同一调用 |
-| 站点调用全部超时 | 忽略了 `credential.proxy`，或代理只对部分请求生效 |
+| 站点调用全部超时 | 插件没有使用标准客户端/环境代理，或代理池里的出口不可用 |
 | 平台偶发卡死 | 插件并发处理不安全，或上游无超时无限等待 |
 | 插件被判定未就绪 | 必填凭证未配置，或 `config.models` 与 `models` 返回值不一致 |
