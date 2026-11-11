@@ -299,6 +299,7 @@ plugins:
 | `auth.type` | `none` / `api_key` / `bearer` / `cookie` / `oauth` |
 | `auth.required_fields` | 缺失则插件不参与路由 |
 | `auth.optional_fields` | 可选凭证字段 |
+| `auth.quota` | 额度计量方式：`ip` 按出口 IP（账号数=代理数）、`key` 按 key 数；留空则 `auth.type: none` 按 IP，其余按 key |
 
 同一个模型 ID 被多个插件声明时，会形成故障转移链；带函数工具的请求只会路由到 `tools: native` 的插件。
 

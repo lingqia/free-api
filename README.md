@@ -119,6 +119,7 @@ plugins:
 | `auth.type` | `none` / `api_key` / `bearer` / `cookie` / `oauth` |
 | `auth.required_fields` | 缺失则插件不参与路由 |
 | `auth.optional_fields` | 可选凭证字段 |
+| `auth.quota` | 额度计量方式：`ip` 按出口 IP（账号数=代理数）、`key` 按 key 数；留空自动推断 |
 
 ## 工具档位
 

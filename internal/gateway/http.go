@@ -353,13 +353,26 @@ func (g *Gateway) handlePlugins(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// quotaBasis 返回站点的额度计量方式：ip 或 key。
+// 配置 auth.quota 优先；未声明时沿用旧行为（匿名站按 IP，其余按 key）。
+func (g *Gateway) quotaBasis(s plugin.Snapshot) string {
+	quota := g.Registry.AuthOf(s.Name).Quota
+	if quota == "ip" || quota == "key" {
+		return quota
+	}
+	if s.AuthType == "" || s.AuthType == "none" {
+		return "ip"
+	}
+	return "key"
+}
+
 // accountsFor 计算站点账号数。
-//   - auth=none：按 IP 代理数统计，站点代理优先，其次全局代理池；
+//   - 按 IP 计量：账号数按出口 IP 统计，站点代理优先，其次全局代理池；
 //     都没有时按直连 1 个 IP 计算；
-//   - 需要 key：按主凭证字段的非空行数统计（每行一个 key）。
+//   - 按 key 计量：账号数按主凭证字段的非空行数统计（每行一个 key）。
 func (g *Gateway) accountsFor(s plugin.Snapshot) pluginAccounts {
 	acc := pluginAccounts{Kind: "key"}
-	if s.AuthType == "" || s.AuthType == "none" {
+	if g.quotaBasis(s) == "ip" {
 		acc.Kind = "proxy"
 		acc.Total = 1
 		if g.Creds != nil {
@@ -393,6 +406,7 @@ func (g *Gateway) accountsFor(s plugin.Snapshot) pluginAccounts {
 type credentialItem struct {
 	Plugin     string         `json:"plugin"`
 	AuthType   string         `json:"auth_type"`
+	Quota      string         `json:"quota"`
 	Fields     []string       `json:"fields"`
 	Configured []string       `json:"configured"`
 	Counts     map[string]int `json:"counts"`
@@ -408,6 +422,7 @@ func (g *Gateway) handleCredentialList(w http.ResponseWriter, r *http.Request) {
 		item := credentialItem{
 			Plugin:     snap.Name,
 			AuthType:   snap.AuthType,
+			Quota:      g.quotaBasis(snap),
 			Fields:     fields,
 			Configured: []string{},
 			Counts:     map[string]int{},

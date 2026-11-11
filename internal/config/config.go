@@ -33,6 +33,11 @@ type Auth struct {
 	RequiredFields  []string `yaml:"required_fields"`
 	OptionalFields  []string `yaml:"optional_fields"`
 	RefreshEndpoint string   `yaml:"refresh_endpoint"`
+	// Quota 声明站点的额度计量方式：
+	//   ip  - 按出口 IP 计量（账号数 = 代理数量）；
+	//   key - 按 key 计量（账号数 = key 数量）；
+	//   留空则自动推断：auth=none 按 IP，其余按 key。
+	Quota string `yaml:"quota"`
 }
 
 // Plugin 是一个站点插件的声明。

@@ -1084,9 +1084,12 @@ async function loadDetailCreds(name) {
   }
 
   const anonymous = c.auth_type === 'none' || c.auth_type === '';
-  box.appendChild(el('div', 'muted detail-note', anonymous
-    ? '本站匿名可用。账号数按代理池中的代理数量统计，未配置代理池时按本机直连 1 个 IP 计算。'
-    : '账号数按 key 数统计：每行一个 key，网关按调用轮换。字段值加密存储，写入后不再回显。'));
+  const ipBased = (c.quota || (anonymous ? 'ip' : 'key')) === 'ip';
+  const hint = ipBased
+    ? (anonymous ? '本站匿名可用。' : '本站可用访客额度。') +
+      '额度按出口 IP 计量；账号数按站点代理或全局代理池的代理数量统计，未配置代理时按本机直连 1 个 IP 计算。'
+    : '账号数按 key 数统计：每行一个 key，网关按调用轮换。字段值加密存储，写入后不再回显。';
+  box.appendChild(el('div', 'muted detail-note', hint));
 
   const fields = (c.fields || []).filter(f => f !== 'proxy');
   fields.forEach(f => {

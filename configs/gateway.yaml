@@ -33,3 +33,5 @@ plugins:
       type: api_key
       optional_fields:
         - api_key
+      # 额度按出口 IP 计量：账号数 = 站点代理数，未配置时取全局代理池数量。
+      quota: ip
